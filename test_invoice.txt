@@ -1,0 +1,21 @@
+
+INVOICE
+
+Invoice Number: INV-2024-001
+Date: 2024-01-15
+Due Date: 2024-02-15
+
+Vendor: ABC Supplies Inc.
+Vendor ID: VEND-001
+
+Line Items:
+1. Office Chairs - Qty: 10 - Unit Price: $150.00 - Total: $1,500.00
+2. Desk Lamps - Qty: 20 - Unit Price: $50.00 - Total: $1,000.00
+
+Subtotal: $2,500.00
+Tax: $250.00
+Total: $2,750.00
+
+Payment Terms: Net 30
+PO Reference: PO-2024-001
+        
