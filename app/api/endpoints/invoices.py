@@ -145,7 +145,7 @@ async def process_invoice(
             "vendor_name": invoice.vendor_name,
             "total_amount": float(invoice.total_amount),
             "recommendation": {
-                "action": recommendation.action.value,
+                "action": str(recommendation.action),
                 "confidence_score": recommendation.confidence_score,
                 "reasoning": recommendation.reasoning,
                 "risk_level": recommendation.risk_level,

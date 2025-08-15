@@ -192,7 +192,7 @@ class ProcessingRecommendation(BaseModel):
 
     def get_summary(self) -> str:
         """Get a brief summary of the recommendation"""
-        return f"{self.action.value} - {self.reasoning[:100]}..."
+        return f"{str(self.action)} - {self.reasoning[:100]}..."
 
     class Config:
         use_enum_values = True

@@ -169,7 +169,7 @@ class TestInvoiceProcessing:
         assert len(violations) > 0
 
         # Check for specific violation types
-        violation_types = [v.violation_type.value for v in violations]
+        violation_types = [str(v.violation_type) for v in violations]
         assert "AMOUNT_EXCEEDS_THRESHOLD" in violation_types
 
     @patch("app.core.recommendation_engine.ChatOpenAI")

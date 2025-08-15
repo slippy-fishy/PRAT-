@@ -55,7 +55,7 @@ class InvoiceService:
                     "invoice_number": invoice.invoice_number,
                     "vendor_name": invoice.vendor_name,
                     "amount": float(invoice.total_amount),
-                    "action": recommendation.action.value,
+                    "action": str(recommendation.action),
                     "processed_at": datetime.now(),
                 }
             )

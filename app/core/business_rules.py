@@ -337,7 +337,7 @@ class BusinessRulesEngine:
 
         # Count violations by type
         for violation in violations:
-            violation_type = violation.violation_type.value
+            violation_type = str(violation.violation_type)
             if violation_type not in summary["violations_by_type"]:
                 summary["violations_by_type"][violation_type] = 0
             summary["violations_by_type"][violation_type] += 1

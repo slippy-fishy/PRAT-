@@ -218,7 +218,7 @@ VALIDATION RESULTS:
 VIOLATIONS FOUND:
 {violations_text}
 
-RECOMMENDED ACTION: {action.value}
+RECOMMENDED ACTION: {str(action)}
 
 Please provide a 2-3 sentence explanation that:
 1. Summarizes the key findings
@@ -366,7 +366,7 @@ Keep the tone professional and factual.
 
         # If tax issues, suggest verification
         tax_violations = [
-            v for v in violations if v.violation_type.value == "INVALID_TAX_CALCULATION"
+            v for v in violations if str(v.violation_type) == "INVALID_TAX_CALCULATION"
         ]
         if tax_violations:
             actions.append("Verify tax calculations with accounting team")
