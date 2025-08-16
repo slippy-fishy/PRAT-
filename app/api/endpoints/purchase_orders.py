@@ -1,22 +1,22 @@
 """
 Purchase Order API endpoints
 """
-
 import logging
 from typing import List, Optional
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, HTTPException, Query, UploadFile, File, Depends
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
-from app.services.po_service import POService
-from app.core.document_processor import DocumentProcessor
+from app.core.database import get_db_context
+from app.services.po_folder_service import POFolderService, POFolderHandler
+from app.models.database_models import PurchaseOrderDB, POLineItemDB
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-po_service = POService()
-document_processor = DocumentProcessor()
+po_folder_service = POFolderService()
 
 class CreatePORequest(BaseModel):
     """Request model for creating a PO manually"""
@@ -24,7 +24,7 @@ class CreatePORequest(BaseModel):
     vendor_name: str
     vendor_id: Optional[str] = None
     po_date: datetime
-    total_authorized: float
+    total_amount: float
     currency: str = "USD"
     line_items: List[dict]
     contract_reference: Optional[str] = None
@@ -33,37 +33,140 @@ class CreatePORequest(BaseModel):
     billing_address: Optional[str] = None
     notes: Optional[str] = None
 
-@router.post("/test-llm")
-async def test_llm_response():
-    """Test endpoint to debug LLM responses"""
+@router.get("/")
+async def list_purchase_orders(
+    vendor: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    min_amount: Optional[float] = Query(None),
+    max_amount: Optional[float] = Query(None),
+    limit: int = Query(50),
+    offset: int = Query(0),
+):
+    """List all stored purchase orders"""
     try:
-        from app.core.document_processor import DocumentProcessor
-        processor = DocumentProcessor()
-        
-        # Test with a simple prompt
-        test_text = """
-        PO Number: TEST-PO-001
-        Vendor: Test Vendor Inc.
-        Date: 2024-01-15
-        Total: 1000.00
-        """
-        
-        # Test the extraction
-        result = processor.extract_po_data(test_text)
-        
-        return {
-            "success": True,
-            "extracted_data": result,
-            "message": "LLM test successful"
-        }
-        
+        with get_db_context() as db:
+            # Build query
+            query = db.query(PurchaseOrderDB)
+            
+            # Apply filters
+            if vendor:
+                query = query.filter(PurchaseOrderDB.vendor_name.ilike(f"%{vendor}%"))
+            if status:
+                query = query.filter(PurchaseOrderDB.status == status)
+            if min_amount is not None:
+                query = query.filter(PurchaseOrderDB.total_amount >= min_amount)
+            if max_amount is not None:
+                query = query.filter(PurchaseOrderDB.total_amount <= max_amount)
+            
+            # Get total count
+            total_count = query.count()
+            
+            # Apply pagination
+            pos = query.offset(offset).limit(limit).all()
+            
+            # Convert to dict format
+            po_list = []
+            for po in pos:
+                po_dict = {
+                    "id": str(po.id),
+                    "po_number": po.po_number,
+                    "vendor_name": po.vendor_name,
+                    "vendor_id": po.vendor_id,
+                    "total_amount": float(po.total_amount),
+                    "currency": po.currency,
+                    "po_date": po.po_date.isoformat() if po.po_date else None,
+                    "delivery_date": po.delivery_date.isoformat() if po.delivery_date else None,
+                    "status": po.status,
+                    "file_path": po.file_path,
+                    "created_at": po.created_at.isoformat() if po.created_at else None,
+                    "updated_at": po.updated_at.isoformat() if po.updated_at else None
+                }
+                po_list.append(po_dict)
+            
+            return {
+                "purchase_orders": po_list,
+                "total_count": total_count,
+                "limit": limit,
+                "offset": offset
+            }
+            
     except Exception as e:
-        logger.error(f"LLM test failed: {e}")
+        logger.error(f"Error listing POs: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@router.get("/{po_number}")
+async def get_purchase_order_details(po_number: str):
+    """Get detailed PO information for matching"""
+    try:
+        with get_db_context() as db:
+            po = db.query(PurchaseOrderDB).filter_by(po_number=po_number).first()
+            
+            if not po:
+                raise HTTPException(status_code=404, detail="Purchase order not found")
+            
+            # Get line items
+            line_items = db.query(POLineItemDB).filter_by(po_id=po.id).all()
+            
+            # Build detailed response
+            po_details = {
+                "id": str(po.id),
+                "po_number": po.po_number,
+                "vendor_name": po.vendor_name,
+                "vendor_id": po.vendor_id,
+                "total_amount": float(po.total_amount),
+                "currency": po.currency,
+                "po_date": po.po_date.isoformat() if po.po_date else None,
+                "delivery_date": po.delivery_date.isoformat() if po.delivery_date else None,
+                "status": po.status,
+                "file_path": po.file_path,
+                "file_hash": po.file_hash,
+                "created_at": po.created_at.isoformat() if po.created_at else None,
+                "updated_at": po.updated_at.isoformat() if po.updated_at else None,
+                "line_items": [
+                    {
+                        "id": str(item.id),
+                        "line_number": item.line_number,
+                        "description": item.description,
+                        "quantity": float(item.quantity),
+                        "unit_price": float(item.unit_price),
+                        "total_amount": float(item.total_amount),
+                        "product_code": item.product_code,
+                        "category": item.category
+                    }
+                    for item in line_items
+                ]
+            }
+            
+            return po_details
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting PO details for {po_number}: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@router.post("/scan-folder")
+async def scan_po_folder():
+    """Manually trigger PO folder scan"""
+    try:
+        from app.config import settings
+        
+        with get_db_context() as db:
+            result = po_folder_service.scan_folder(db, settings.po_folder_path)
+        
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=result["error"])
+        
         return {
-            "success": False,
-            "error": str(e),
-            "message": "LLM test failed"
+            "message": "PO folder scan completed",
+            "scan_results": result
         }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error scanning PO folder: {e}")
+        raise HTTPException(status_code=500, detail="Failed to scan folder")
 
 @router.post("/upload")
 async def upload_purchase_order(file: UploadFile = File(...)):
@@ -83,31 +186,30 @@ async def upload_purchase_order(file: UploadFile = File(...)):
         try:
             # First extract text from the PDF
             logger.info(f"Extracting text from PDF: {temp_file_path}")
+            from app.core.document_processor import DocumentProcessor
+            document_processor = DocumentProcessor()
+            
             extracted_text = document_processor.extract_text_from_pdf(temp_file_path)
             
             if not extracted_text or len(extracted_text.strip()) < 10:
                 raise HTTPException(status_code=400, detail="Could not extract meaningful text from PDF")
             
             logger.info(f"Extracted {len(extracted_text)} characters from PDF")
-            logger.debug(f"Extracted text preview: {extracted_text[:200]}...")
             
             # Process the extracted text to extract PO data
             po_data = document_processor.extract_po_data(extracted_text)
             
-            # Save to PO service
-            po = po_service.create_po_from_data(po_data)
+            # Store to database using folder service
+            with get_db_context() as db:
+                handler = POFolderHandler(db)
+                handler._store_po_data(po_data, temp_file_path, handler._get_file_hash(temp_file_path))
             
-            if po:
-                logger.info(f"Successfully processed and saved PO: {po.po_number}")
-                return {
-                    "message": "Purchase Order uploaded successfully",
-                    "po_number": po.po_number,
-                    "vendor_name": po.vendor_name,
-                    "total_authorized": float(po.total_authorized),
-                    "line_items_count": len(po.line_items)
-                }
-            else:
-                raise HTTPException(status_code=400, detail="Failed to create PO from uploaded data")
+            return {
+                "message": "Purchase Order uploaded and processed successfully",
+                "po_number": po_data.get('po_number'),
+                "vendor_name": po_data.get('vendor_name'),
+                "total_amount": po_data.get('total_authorized', 0)
+            }
                 
         finally:
             # Clean up temporary file
@@ -117,123 +219,33 @@ async def upload_purchase_order(file: UploadFile = File(...)):
         logger.error(f"Error processing PO upload: {e}")
         raise HTTPException(status_code=500, detail=f"Error processing PO: {str(e)}")
 
-@router.get("/")
-async def list_purchase_orders(
-    vendor: Optional[str] = Query(None),
-    status: Optional[str] = Query(None),
-    min_amount: Optional[float] = Query(None),
-    max_amount: Optional[float] = Query(None),
-    limit: int = Query(50),
-    offset: int = Query(0),
-):
-    """List purchase orders with optional filtering"""
-    try:
-        pos = po_service.get_all_pos()
-        
-        # Apply filters
-        if vendor:
-            pos = [po for po in pos if vendor.lower() in po.vendor_name.lower()]
-        if status:
-            pos = [po for po in pos if po.status.upper() == status.upper()]
-        if min_amount is not None:
-            pos = [po for po in pos if float(po.total_authorized) >= min_amount]
-        if max_amount is not None:
-            pos = [po for po in pos if float(po.total_authorized) <= max_amount]
-        
-        # Apply pagination
-        total_count = len(pos)
-        pos = pos[offset:offset + limit]
-        
-        return {
-            "purchase_orders": [po.dict() for po in pos],
-            "total_count": total_count,
-            "limit": limit,
-            "offset": offset
-        }
-        
-    except Exception as e:
-        logger.error(f"Error listing POs: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-@router.get("/{po_number}")
-async def get_purchase_order(po_number: str):
-    """Get purchase order by number"""
-    try:
-        po = po_service.get_po_by_number(po_number)
-        if not po:
-            raise HTTPException(status_code=404, detail="Purchase order not found")
-        
-        return po.dict()
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting PO {po_number}: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-@router.post("/")
-async def create_purchase_order(request: CreatePORequest):
-    """Create a new purchase order manually"""
-    try:
-        po_data = request.dict()
-        po = po_service.create_po(po_data)
-        
-        if po:
-            return po.dict()
-        else:
-            raise HTTPException(status_code=400, detail="Failed to create purchase order")
-            
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error creating PO: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-@router.put("/{po_number}")
-async def update_purchase_order(po_number: str, updates: dict):
-    """Update an existing purchase order"""
-    try:
-        po = po_service.update_po(po_number, updates)
-        
-        if po:
-            return po.dict()
-        else:
-            raise HTTPException(status_code=404, detail="Purchase order not found")
-            
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error updating PO {po_number}: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-@router.delete("/{po_number}")
-async def delete_purchase_order(po_number: str):
-    """Delete a purchase order"""
-    try:
-        success = po_service.delete_po(po_number)
-        
-        if success:
-            return {"message": f"Purchase order {po_number} deleted successfully"}
-        else:
-            raise HTTPException(status_code=404, detail="Purchase order not found")
-            
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error deleting PO {po_number}: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
 @router.get("/vendor/{vendor_name}")
 async def get_pos_by_vendor(vendor_name: str):
     """Get purchase orders by vendor name"""
     try:
-        pos = po_service.get_pos_by_vendor(vendor_name)
-        return {
-            "vendor_name": vendor_name,
-            "purchase_orders": [po.dict() for po in pos],
-            "total_count": len(pos)
-        }
-        
+        with get_db_context() as db:
+            pos = db.query(PurchaseOrderDB).filter(
+                PurchaseOrderDB.vendor_name.ilike(f"%{vendor_name}%")
+            ).all()
+            
+            po_list = []
+            for po in pos:
+                po_dict = {
+                    "id": str(po.id),
+                    "po_number": po.po_number,
+                    "vendor_name": po.vendor_name,
+                    "total_amount": float(po.total_amount),
+                    "status": po.status,
+                    "po_date": po.po_date.isoformat() if po.po_date else None
+                }
+                po_list.append(po_dict)
+            
+            return {
+                "vendor_name": vendor_name,
+                "purchase_orders": po_list,
+                "total_count": len(po_list)
+            }
+            
     except Exception as e:
         logger.error(f"Error getting POs for vendor {vendor_name}: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -242,9 +254,48 @@ async def get_pos_by_vendor(vendor_name: str):
 async def get_po_statistics():
     """Get purchase order statistics"""
     try:
-        stats = po_service.get_po_statistics()
-        return stats
-        
+        with get_db_context() as db:
+            total_pos = db.query(PurchaseOrderDB).count()
+            total_amount = db.query(PurchaseOrderDB.total_amount).scalar() or 0
+            
+            # Count by status
+            status_counts = {}
+            status_results = db.query(PurchaseOrderDB.status, db.func.count(PurchaseOrderDB.id))\
+                .group_by(PurchaseOrderDB.status).all()
+            
+            for status, count in status_results:
+                status_counts[status] = count
+            
+            # Count by vendor
+            vendor_counts = {}
+            vendor_results = db.query(PurchaseOrderDB.vendor_name, db.func.count(PurchaseOrderDB.id))\
+                .group_by(PurchaseOrderDB.vendor_name).all()
+            
+            for vendor, count in vendor_results:
+                vendor_counts[vendor] = count
+            
+            # Average PO amount
+            avg_amount = total_amount / total_pos if total_pos > 0 else 0
+            
+            stats = {
+                "total_pos": total_pos,
+                "total_amount": float(total_amount),
+                "average_amount": float(avg_amount),
+                "status_distribution": status_counts,
+                "vendor_distribution": vendor_counts,
+                "last_updated": datetime.utcnow().isoformat()
+            }
+            
+            return stats
+            
     except Exception as e:
-        logger.error(f"Error getting PO statistics: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        logger.error(f"Error generating PO statistics: {e}")
+        return {
+            "total_pos": 0,
+            "total_amount": 0.0,
+            "average_amount": 0.0,
+            "status_distribution": {},
+            "vendor_distribution": {},
+            "last_updated": datetime.utcnow().isoformat(),
+            "error": str(e)
+        }

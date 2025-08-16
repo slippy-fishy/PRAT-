@@ -8,6 +8,8 @@ from datetime import datetime
 from decimal import Decimal
 
 from app.models.purchase_order import PurchaseOrder, POLineItem
+from app.models.database_models import PurchaseOrderDB, POLineItemDB
+from app.core.database import get_db_context
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -18,20 +20,31 @@ class POService:
 
     def __init__(self):
         """Initialize the PO service"""
-        # Start with empty storage - no more hardcoded sample data
-        self._pos = {}
-        logger.info("PO Service initialized with empty storage")
+        logger.info("PO Service initialized with database storage")
 
     def get_po_by_number(self, po_number: str) -> Optional[PurchaseOrder]:
         """Get purchase order by PO number"""
         try:
-            po = self._pos.get(po_number.upper())
-            if po:
-                logger.info(f"Found PO: {po_number}")
-                return po
-            else:
-                logger.info(f"PO not found: {po_number}")
-                return None
+            with get_db_context() as db:
+                po_db = db.query(PurchaseOrderDB).filter_by(po_number=po_number).first()
+                
+                if po_db:
+                    logger.info(f"Found PO: {po_number}")
+                    # Convert database model to Pydantic model
+                    return PurchaseOrder(
+                        po_number=po_db.po_number,
+                        vendor_name=po_db.vendor_name,
+                        vendor_id=po_db.vendor_id,
+                        total_authorized=float(po_db.total_amount) if po_db.total_amount else 0.0,
+                        currency=po_db.currency,
+                        po_date=po_db.po_date,
+                        delivery_date=po_db.delivery_date,
+                        status=po_db.status,
+                        line_items=[]
+                    )
+                else:
+                    logger.info(f"PO not found: {po_number}")
+                    return None
 
         except Exception as e:
             logger.error(f"Error getting PO {po_number}: {e}")
@@ -41,15 +54,29 @@ class POService:
         """Get all purchase orders for a specific vendor"""
         try:
             logger.info(f"Looking up POs for vendor: {vendor_name}")
-            vendor_pos = []
-            vendor_lower = vendor_name.lower()
+            
+            with get_db_context() as db:
+                vendor_pos_db = db.query(PurchaseOrderDB).filter(
+                    PurchaseOrderDB.vendor_name.ilike(f"%{vendor_name}%")
+                ).all()
+                
+                pos_list = []
+                for po_db in vendor_pos_db:
+                    po = PurchaseOrder(
+                        po_number=po_db.po_number,
+                        vendor_name=po_db.vendor_name,
+                        vendor_id=po_db.vendor_id,
+                        total_authorized=float(po_db.total_amount) if po_db.total_amount else 0.0,
+                        currency=po_db.currency,
+                        po_date=po_db.po_date,
+                        delivery_date=po_db.delivery_date,
+                        status=po_db.status,
+                        line_items=[]
+                    )
+                    pos_list.append(po)
 
-            for po in self._pos.values():
-                if vendor_lower in po.vendor_name.lower():
-                    vendor_pos.append(po)
-
-            logger.info(f"Found {len(vendor_pos)} POs for vendor {vendor_name}")
-            return vendor_pos
+                logger.info(f"Found {len(pos_list)} POs for vendor {vendor_name}")
+                return pos_list
 
         except Exception as e:
             logger.error(f"Error getting POs for vendor {vendor_name}: {e}")
@@ -58,9 +85,26 @@ class POService:
     def get_all_pos(self) -> List[PurchaseOrder]:
         """Get all purchase orders"""
         try:
-            pos_list = list(self._pos.values())
-            logger.info(f"Retrieved {len(pos_list)} purchase orders")
-            return pos_list
+            with get_db_context() as db:
+                pos_db_list = db.query(PurchaseOrderDB).all()
+                
+                pos_list = []
+                for po_db in pos_db_list:
+                    po = PurchaseOrder(
+                        po_number=po_db.po_number,
+                        vendor_name=po_db.vendor_name,
+                        vendor_id=po_db.vendor_id,
+                        total_authorized=float(po_db.total_amount) if po_db.total_amount else 0.0,
+                        currency=po_db.currency,
+                        po_date=po_db.po_date,
+                        delivery_date=po_db.delivery_date,
+                        status=po_db.status,
+                        line_items=[]
+                    )
+                    pos_list.append(po)
+
+                logger.info(f"Retrieved {len(pos_list)} purchase orders")
+                return pos_list
 
         except Exception as e:
             logger.error(f"Error getting all POs: {e}")
@@ -70,14 +114,26 @@ class POService:
         """Get purchase orders by status"""
         try:
             logger.info(f"Looking up POs with status: {status}")
-            status_pos = []
-            status_upper = status.upper()
+            
+            with get_db_context() as db:
+                status_pos_db = db.query(PurchaseOrderDB).filter_by(status=status).all()
+                
+                pos_list = []
+                for po_db in status_pos_db:
+                    po = PurchaseOrder(
+                        po_number=po_db.po_number,
+                        vendor_name=po_db.vendor_name,
+                        vendor_id=po_db.vendor_id,
+                        total_authorized=float(po_db.total_amount) if po_db.total_amount else 0.0,
+                        currency=po_db.currency,
+                        po_date=po_db.po_date,
+                        delivery_date=po_db.delivery_date,
+                        status=po_db.status,
+                        line_items=[]
+                    )
+                    pos_list.append(po)
 
-            for po in self._pos.values():
-                if po.status.upper() == status_upper:
-                    status_pos.append(po)
-
-            return status_pos
+                return pos_list
 
         except Exception as e:
             logger.error(f"Error getting POs by status {status}: {e}")
@@ -89,13 +145,28 @@ class POService:
         """Get purchase orders within an amount range"""
         try:
             logger.info(f"Looking up POs between ${min_amount} and ${max_amount}")
-            pos_in_range = []
+            
+            with get_db_context() as db:
+                pos_in_range_db = db.query(PurchaseOrderDB).filter(
+                    PurchaseOrderDB.total_amount.between(min_amount, max_amount)
+                ).all()
+                
+                pos_list = []
+                for po_db in pos_in_range_db:
+                    po = PurchaseOrder(
+                        po_number=po_db.po_number,
+                        vendor_name=po_db.vendor_name,
+                        vendor_id=po_db.vendor_id,
+                        total_authorized=float(po_db.total_amount) if po_db.total_amount else 0.0,
+                        currency=po_db.currency,
+                        po_date=po_db.po_date,
+                        delivery_date=po_db.delivery_date,
+                        status=po_db.status,
+                        line_items=[]
+                    )
+                    pos_list.append(po)
 
-            for po in self._pos.values():
-                if min_amount <= po.total_authorized <= max_amount:
-                    pos_in_range.append(po)
-
-            return pos_in_range
+                return pos_list
 
         except Exception as e:
             logger.error(f"Error getting POs by amount range: {e}")

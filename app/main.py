@@ -11,6 +11,7 @@ import uvicorn
 from app.config import settings
 from app.api.routes import api_router
 from app.utils.logging import setup_logging
+from app.api.endpoints import invoices, purchase_orders, folder_monitoring
 
 # Setup logging
 setup_logging()
