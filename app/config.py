@@ -109,12 +109,17 @@ class Settings(BaseSettings):
     @classmethod
     def validate_folder_paths(cls, v):
         """Ensure folder paths are absolute or relative to project root"""
+        print(f"DEBUG: Validating folder path: '{v}'")
         if os.path.isabs(v):
+            print(f"DEBUG: Path is already absolute: {v}")
             return v
         else:
             # Make relative to project root
             project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            return os.path.join(project_root, v)
+            print(f"DEBUG: Project root: {project_root}")
+            resolved_path = os.path.join(project_root, v)
+            print(f"DEBUG: Resolved path: {resolved_path}")
+            return resolved_path
 
     class Config:
         env_file = ".env"

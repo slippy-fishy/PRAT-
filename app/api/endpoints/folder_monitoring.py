@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Dict, Any
 
 from fastapi import APIRouter, HTTPException, Depends
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db_context
@@ -19,6 +20,24 @@ router = APIRouter()
 
 # Global folder service instance
 po_folder_service = POFolderService()
+
+class FolderScanRequest(BaseModel):
+    """Request model for scanning a custom folder"""
+    folder_path: str
+
+@router.get("/test-api")
+async def test_api():
+    """Simple test endpoint to verify API is working"""
+    return {"message": "API is working correctly", "timestamp": "2024-01-01T00:00:00Z"}
+
+@router.post("/echo-path")
+async def echo_path(request: FolderScanRequest):
+    """Echo back the path to debug path handling"""
+    return {
+        "received_path": request.folder_path,
+        "path_type": type(request.folder_path).__name__,
+        "path_length": len(request.folder_path) if request.folder_path else 0
+    }
 
 @router.post("/start-monitoring")
 async def start_po_monitoring():
@@ -53,25 +72,85 @@ async def stop_po_monitoring():
         raise HTTPException(status_code=500, detail=f"Failed to stop monitoring: {str(e)}")
 
 @router.post("/scan-folder")
-async def scan_po_folder():
-    """Manually scan the PO folder for files"""
+async def scan_po_folder(request: FolderScanRequest):
+    """Manually scan a folder for files"""
     try:
+        import os
+        logger.info(f"Current working directory: {os.getcwd()}")
+        logger.info(f"Received scan folder request for: {request.folder_path}")
+        logger.info(f"Request object: {request}")
+        
+        folder_path = request.folder_path
+        logger.info(f"Processing folder path: {folder_path}")
+        
+        # Resolve absolute path for debugging
+        abs_path = os.path.abspath(folder_path)
+        logger.info(f"Absolute path: {abs_path}")
+        
+        # Validate folder path
+        if not os.path.exists(folder_path):
+            logger.warning(f"Folder does not exist: {folder_path}")
+            raise HTTPException(status_code=400, detail=f"Folder does not exist: {folder_path}")
+        
+        if not os.path.isdir(folder_path):
+            logger.warning(f"Path is not a directory: {folder_path}")
+            raise HTTPException(status_code=400, detail=f"Path is not a directory: {folder_path}")
+        
+        logger.info(f"Scanning folder: {folder_path}")
         with get_db_context() as db:
-            result = po_folder_service.scan_folder(db, settings.po_folder_path)
+            result = po_folder_service.scan_folder(db, folder_path)
         
         if "error" in result:
+            logger.error(f"Error in scan result: {result['error']}")
             raise HTTPException(status_code=400, detail=result["error"])
         
+        logger.info(f"Folder scan completed successfully for: {folder_path}")
         return {
-            "message": "PO folder scan completed",
+            "message": f"Folder scan completed for: {folder_path}",
+            "folder_path": folder_path,
             "scan_results": result
         }
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error scanning PO folder: {e}")
+        logger.error(f"Error scanning folder {request.folder_path}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to scan folder: {str(e)}")
+
+@router.post("/batch-process")
+async def batch_process_folder(request: FolderScanRequest):
+    """Process all files in a folder in batch"""
+    try:
+        folder_path = request.folder_path
+        
+        # Validate folder path
+        if not os.path.exists(folder_path):
+            raise HTTPException(status_code=400, detail=f"Folder does not exist: {folder_path}")
+        
+        if not os.path.isdir(folder_path):
+            raise HTTPException(status_code=400, detail=f"Path is not a directory: {folder_path}")
+        
+        # Use the service method for batch processing
+        with get_db_context() as db:
+            result = po_folder_service.batch_process_folder(db, folder_path)
+            
+            if "error" in result:
+                raise HTTPException(status_code=400, detail=result["error"])
+            
+            return {
+                "message": f"Batch processing completed for folder: {folder_path}",
+                "folder_path": folder_path,
+                "total_files": result["total_files"],
+                "processed_files": result["processed_files"],
+                "errors": result["errors"],
+                "summary": result["summary"]
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in batch processing folder {request.folder_path}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to batch process folder: {str(e)}")
 
 @router.get("/status")
 async def get_monitoring_status():

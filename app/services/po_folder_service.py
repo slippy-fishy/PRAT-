@@ -178,31 +178,31 @@ class POFolderService:
             if not os.path.exists(folder_path):
                 return {"error": f"Folder does not exist: {folder_path}"}
             
-            # Create temporary handler for scanning
-            handler = POFolderHandler(db_session)
-            
-            # Get all files in folder
-            po_files = []
-            processed_count = 0
-            error_count = 0
+            # Get all files in folder with detailed information
+            files_info = []
+            total_size = 0
             
             for file_path in Path(folder_path).glob("*"):
-                if file_path.is_file() and handler._is_po_file(str(file_path)):
-                    po_files.append(str(file_path))
-                    
+                if file_path.is_file():
                     try:
-                        handler.process_po_file(str(file_path))
-                        processed_count += 1
+                        file_stat = file_path.stat()
+                        file_info = {
+                            "name": file_path.name,
+                            "size": file_stat.st_size,
+                            "modified": file_stat.st_mtime,
+                            "extension": file_path.suffix.lower(),
+                            "full_path": str(file_path)
+                        }
+                        files_info.append(file_info)
+                        total_size += file_stat.st_size
                     except Exception as e:
-                        error_count += 1
-                        logger.error(f"Error processing {file_path}: {e}")
+                        logger.error(f"Error getting file info for {file_path}: {e}")
             
             return {
                 "folder_path": folder_path,
-                "total_files": len(po_files),
-                "processed_count": processed_count,
-                "error_count": error_count,
-                "files": po_files
+                "total_files": len(files_info),
+                "total_size": total_size,
+                "files": files_info
             }
             
         except Exception as e:
@@ -215,3 +215,129 @@ class POFolderService:
             "is_monitoring": self.is_monitoring,
             "folder_path": getattr(self.handler, 'folder_path', None) if self.handler else None
         }
+    
+    def batch_process_folder(self, db_session: Session, folder_path: str) -> Dict[str, Any]:
+        """Process all files in a folder in batch"""
+        try:
+            if not os.path.exists(folder_path):
+                return {"error": f"Folder does not exist: {folder_path}"}
+            
+            # Create handler for processing
+            handler = POFolderHandler(db_session)
+            
+            # Get all files in folder
+            files_info = []
+            processed_files = []
+            errors = []
+            skipped_files = []
+            
+            for file_path in Path(folder_path).glob("*"):
+                if file_path.is_file():
+                    try:
+                        file_stat = file_path.stat()
+                        file_info = {
+                            "name": file_path.name,
+                            "size": file_stat.st_size,
+                            "modified": file_stat.st_mtime,
+                            "extension": file_path.suffix.lower(),
+                            "full_path": str(file_path)
+                        }
+                        files_info.append(file_info)
+                    except Exception as e:
+                        logger.error(f"Error getting file info for {file_path}: {e}")
+            
+            # Process each file
+            for file_info in files_info:
+                try:
+                    file_path = file_info["full_path"]
+                    
+                    # Check if file is a PDF
+                    if file_info["extension"].lower() == ".pdf":
+                        # Extract text from PDF
+                        extracted_text = handler.document_processor.extract_text_from_file(file_path)[0]
+                        
+                        if extracted_text and len(extracted_text.strip()) > 10:
+                            # Extract PO data
+                            po_data = handler.document_processor.extract_po_data(extracted_text)
+                            
+                            # Check if PO already exists
+                            existing_po = db_session.query(PurchaseOrderDB).filter_by(
+                                po_number=po_data.get('po_number')
+                            ).first()
+                            
+                            if existing_po:
+                                # PO already exists - skip it
+                                skipped_files.append({
+                                    "name": file_info["name"],
+                                    "status": "skipped",
+                                    "reason": f"PO {po_data.get('po_number')} already exists in database",
+                                    "po_number": po_data.get('po_number'),
+                                    "vendor_name": po_data.get('vendor_name')
+                                })
+                                logger.info(f"Skipping existing PO: {po_data.get('po_number')}")
+                            else:
+                                # New PO - process it
+                                try:
+                                    handler._store_po_data(po_data, file_path, handler._get_file_hash(file_path))
+                                    processed_files.append({
+                                        "name": file_info["name"],
+                                        "status": "success",
+                                        "po_number": po_data.get('po_number'),
+                                        "vendor_name": po_data.get('vendor_name')
+                                    })
+                                    logger.info(f"Successfully processed new PO: {po_data.get('po_number')}")
+                                except Exception as store_error:
+                                    if "duplicate key" in str(store_error).lower() or "unique constraint" in str(store_error).lower():
+                                        # Handle race condition where PO was created between check and insert
+                                        skipped_files.append({
+                                            "name": file_info["name"],
+                                            "status": "skipped",
+                                            "reason": f"PO {po_data.get('po_number')} was created by another process",
+                                            "po_number": po_data.get('po_number'),
+                                            "vendor_name": po_data.get('vendor_name')
+                                        })
+                                        logger.info(f"Skipping PO due to race condition: {po_data.get('po_number')}")
+                                    else:
+                                        # Other storage error
+                                        errors.append({
+                                            "name": file_info["name"],
+                                            "status": "error",
+                                            "error": f"Database error: {str(store_error)}"
+                                        })
+                                        logger.error(f"Error storing PO {po_data.get('po_number')}: {store_error}")
+                        else:
+                            errors.append({
+                                "name": file_info["name"],
+                                "status": "error",
+                                "error": "Could not extract meaningful text from PDF"
+                            })
+                    else:
+                        errors.append({
+                            "name": file_info["name"],
+                            "status": "skipped",
+                            "error": f"File type {file_info['extension']} not supported"
+                        })
+                        
+                except Exception as e:
+                    errors.append({
+                        "name": file_info["name"],
+                        "status": "error",
+                        "error": str(e)
+                    })
+            
+            return {
+                "folder_path": folder_path,
+                "total_files": len(files_info),
+                "processed_files": processed_files,
+                "skipped_files": skipped_files,
+                "errors": errors,
+                "summary": {
+                    "successful": len(processed_files),
+                    "skipped": len(skipped_files),
+                    "failed": len([e for e in errors if e["status"] == "error"])
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in batch processing folder {folder_path}: {e}")
+            return {"error": str(e)}

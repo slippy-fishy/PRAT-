@@ -6,6 +6,7 @@ import logging
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 import uvicorn
 
 from app.config import settings
@@ -34,6 +35,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount static files
+app.mount("/static", StaticFiles(directory="app/static", html=True), name="static")
 
 # Include API routes
 app.include_router(api_router, prefix=settings.api_v1_str)
@@ -64,13 +68,15 @@ async def health_check():
 # Root endpoint
 @app.get("/")
 async def root():
-    """Root endpoint with API information"""
-    return {
-        "message": "Welcome to PRAT - Pay Request Approval Tool",
-        "version": "1.0.0",
-        "docs": "/docs",
-        "health": "/health",
-    }
+    """Root endpoint that serves the main HTML page"""
+    from fastapi.responses import FileResponse
+    return FileResponse("app/static/index.html")
+
+@app.get("/test-style")
+async def test_style():
+    """Test style page endpoint"""
+    from fastapi.responses import FileResponse
+    return FileResponse("app/static/test_style.html")
 
 
 if __name__ == "__main__":

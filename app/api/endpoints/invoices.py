@@ -10,6 +10,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Depends, Query
 from fastapi.responses import JSONResponse
+from sqlalchemy.orm import Session
 
 from app.core.document_processor import DocumentProcessor
 from app.core.po_matcher import POMatcher
@@ -21,6 +22,8 @@ from app.services.invoice_service import InvoiceService
 from app.models.invoice import Invoice
 from app.models.recommendation import ProcessingRecommendation
 from app.config import settings
+from app.core.database import get_db_context
+from app.models.database_models import InvoiceDB
 
 logger = logging.getLogger(__name__)
 
@@ -179,21 +182,109 @@ async def process_invoice(
         )
 
 
-@router.get("/{invoice_id}")
-async def get_invoice(invoice_id: str):
-    """Get processed invoice by ID"""
+@router.get("/")
+async def get_invoices(
+    db: Session = Depends(get_db_context),
+    limit: Optional[int] = 100,
+    offset: Optional[int] = 0
+):
+    """Get all invoices with pagination"""
     try:
-        invoice_data = invoice_service.get_invoice(invoice_id)
-        if not invoice_data:
-            raise HTTPException(status_code=404, detail="Invoice not found")
+        with get_db_context() as db_session:
+            invoice_service = InvoiceService()
+            # For now, return empty list since we don't have real invoice data yet
+            # TODO: Implement real invoice retrieval from database
+            return []
+            
+    except Exception as e:
+        logger.error(f"Error retrieving invoices: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve invoices: {str(e)}")
 
-        return invoice_data
-
+@router.get("/{invoice_id}")
+async def get_invoice(
+    invoice_id: str,
+    db: Session = Depends(get_db_context)
+):
+    """Get a specific invoice by ID"""
+    try:
+        with get_db_context() as db_session:
+            invoice_service = InvoiceService()
+            invoice = invoice_service.get_invoice_by_id(db_session, invoice_id)
+            
+            if not invoice:
+                raise HTTPException(status_code=404, detail="Invoice not found")
+            
+            # Convert to frontend-friendly format
+            formatted_invoice = {
+                "id": invoice.id,
+                "invoice_number": invoice.invoice_number,
+                "vendor_name": invoice.vendor_name,
+                "total_amount": float(invoice.total_amount) if invoice.total_amount else 0,
+                "invoice_date": invoice.invoice_date.isoformat() if invoice.invoice_date else None,
+                "status": invoice.status or "pending",
+                "recommendation": invoice.recommendation or "pending",
+                "confidence_score": invoice.confidence_score or 0,
+                "po_matches": [],  # TODO: Implement PO matching logic
+                "created_at": invoice.created_at.isoformat() if invoice.created_at else None,
+                "updated_at": invoice.updated_at.isoformat() if invoice.updated_at else None
+            }
+            
+            return formatted_invoice
+            
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error getting invoice {invoice_id}: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        logger.error(f"Error retrieving invoice {invoice_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve invoice: {str(e)}")
+
+@router.post("/")
+async def create_invoice(
+    invoice_data: dict,
+    db: Session = Depends(get_db_context)
+):
+    """Create a new invoice"""
+    try:
+        with get_db_context() as db_session:
+            invoice_service = InvoiceService()
+            # TODO: Implement invoice creation logic
+            return {"message": "Invoice creation endpoint - implementation pending"}
+            
+    except Exception as e:
+        logger.error(f"Error creating invoice: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to create invoice: {str(e)}")
+
+@router.put("/{invoice_id}")
+async def update_invoice(
+    invoice_id: str,
+    invoice_data: dict,
+    db: Session = Depends(get_db_context)
+):
+    """Update an existing invoice"""
+    try:
+        with get_db_context() as db_session:
+            invoice_service = InvoiceService()
+            # TODO: Implement invoice update logic
+            return {"message": "Invoice update endpoint - implementation pending"}
+            
+    except Exception as e:
+        logger.error(f"Error updating invoice {invoice_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to update invoice: {str(e)}")
+
+@router.delete("/{invoice_id}")
+async def delete_invoice(
+    invoice_id: str,
+    db: Session = Depends(get_db_context)
+):
+    """Delete an invoice"""
+    try:
+        with get_db_context() as db_session:
+            invoice_service = InvoiceService()
+            # TODO: Implement invoice deletion logic
+            return {"message": "Invoice deletion endpoint - implementation pending"}
+            
+    except Exception as e:
+        logger.error(f"Error deleting invoice {invoice_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete invoice: {str(e)}")
 
 
 @router.get("/{invoice_id}/recommendation")
