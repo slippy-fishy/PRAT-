@@ -368,6 +368,35 @@ Rules:
             logger.error(f"Error extracting PO data: {e}")
             raise
     
+    def process_po_file(self, file_path: str) -> Dict[str, Any]:
+        """Process a PO file and extract structured data"""
+        try:
+            logger.info(f"Processing PO file: {file_path}")
+            start_time = time.time()
+            
+            # Extract text from file
+            text, file_type = self.extract_text_from_file(file_path)
+            
+            if not text or len(text.strip()) < 10:
+                raise ValueError("Could not extract meaningful text from file")
+            
+            # Extract structured PO data using AI
+            po_data = self.extract_po_data(text)
+            
+            # Add metadata
+            po_data['file_path'] = file_path
+            po_data['file_type'] = file_type
+            po_data['extracted_at'] = datetime.now().isoformat()
+            
+            processing_time = (time.time() - start_time) * 1000
+            logger.info(f"PO file processing completed in {processing_time:.2f}ms")
+            
+            return po_data
+            
+        except Exception as e:
+            logger.error(f"Error processing PO file {file_path}: {e}")
+            raise
+
     def process_invoice_file(self, file_path: str) -> Invoice:
         """Process an invoice file and extract data"""
         try:

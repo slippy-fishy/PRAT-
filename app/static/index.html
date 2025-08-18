@@ -1144,11 +1144,8 @@
                         <button class="btn-small" onclick="scanPOFolder()" title="Scan selected folder for PO files">
                             🔍 Scan Folder
                         </button>
-                        <button class="btn-small" onclick="processPOFiles()" title="Process selected PO files">
-                            ⚡ Process
-                        </button>
-                        <button class="btn-small" onclick="processPOFilesFallback()" title="Process PO files with fallback method (no AI)" style="background: #f59e0b;">
-                            🔧 Fallback
+                        <button class="btn-small" onclick="processPOFiles()" title="Process selected PO files with AI">
+                            🤖 AI Process
                         </button>
                         <button class="btn-small" onclick="clearPOSelection()" title="Clear all selected PO files" style="background: #ef4444;">
                             🗑️ Clear
@@ -1506,8 +1503,13 @@
             }
         }
 
-        // Process individual files directly (no API needed)
+        // Process individual files directly (real AI processing)
         async function processIndividualPOFiles() {
+            showNotification('Processing individual PO files with AI...', 'info');
+            
+            let successCount = 0;
+            let errorCount = 0;
+            
             for (let i = 0; i < currentPOFiles.length; i++) {
                 const file = currentPOFiles[i];
                 
@@ -1515,27 +1517,107 @@
                 file.status = 'processing';
                 updatePOFileList();
                 
-                // Simulate processing delay
-                await new Promise(resolve => setTimeout(resolve, 500));
-                
-                // Generate mock PO data for demonstration
-                const mockPOData = generateMockPOData(file.name);
-                
-                // Update file with mock results
-                file.status = 'processed';
-                file.result = {
-                    po_number: mockPOData.po_number,
-                    vendor_name: mockPOData.vendor_name,
-                    total_amount: mockPOData.total_amount,
-                    po_date: mockPOData.po_date
-                };
+                try {
+                    showNotification(`🤖 Processing ${file.name} with AI...`, 'info');
+                    
+                    // Create FormData to send the actual file
+                    const formData = new FormData();
+                    formData.append('file', file.file);
+                    
+                    // Send file to backend for AI processing
+                    const response = await fetch('/api/v1/folder-monitoring/process-po-file', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    if (response.ok) {
+                        const result = await response.json();
+                        
+                        // Update file with real AI-extracted data
+                        file.status = 'processed';
+                        file.result = {
+                            po_number: result.po_number || 'Unknown',
+                            vendor_name: result.vendor_name || 'Unknown Vendor',
+                            total_amount: result.total_amount || 0,
+                            po_date: result.po_date || new Date().toISOString().split('T')[0],
+                            line_items: result.line_items || [],
+                            delivery_date: result.delivery_date,
+                            currency: result.currency || 'USD',
+                            status: result.status || 'active',
+                            extraction_method: result.extraction_method || 'AI Analysis'
+                        };
+                        
+                        successCount++;
+                        showNotification(`✅ AI Success: ${file.name} - PO: ${result.po_number}`, 'success');
+                    } else {
+                        // Handle specific error types
+                        const errorText = await response.text();
+                        console.error(`AI processing failed for ${file.name}:`, errorText);
+                        
+                        let errorMessage = 'Unknown error occurred';
+                        let errorType = 'error';
+                        
+                        try {
+                            const errorData = JSON.parse(errorText);
+                            errorMessage = errorData.detail || errorData.message || errorText;
+                            
+                            // Determine error type based on status code
+                            if (response.status === 429) {
+                                errorType = 'warning';
+                                errorMessage = 'AI quota exceeded. Please try again later.';
+                            } else if (response.status === 400) {
+                                errorType = 'error';
+                                errorMessage = `PDF processing failed: ${errorMessage}`;
+                            } else if (response.status === 500) {
+                                errorType = 'error';
+                                errorMessage = `AI analysis failed: ${errorMessage}`;
+                            }
+                        } catch (e) {
+                            // If error response is not JSON, use the raw text
+                            if (errorText.includes('quota') || errorText.includes('429')) {
+                                errorType = 'warning';
+                                errorMessage = 'AI quota exceeded. Please try again later.';
+                            } else {
+                                errorMessage = `Processing failed: ${errorText}`;
+                            }
+                        }
+                        
+                        // Mark file as failed with error details
+                        file.status = 'error';
+                        file.error = errorMessage;
+                        errorCount++;
+                        
+                        showNotification(`❌ ${file.name}: ${errorMessage}`, errorType);
+                    }
+                } catch (error) {
+                    console.error(`Network error processing ${file.name}:`, error);
+                    
+                    // Mark file as failed with network error
+                    file.status = 'error';
+                    file.error = `Network error: ${error.message}`;
+                    errorCount++;
+                    
+                    showNotification(`❌ ${file.name}: Network error - ${error.message}`, 'error');
+                }
                 
                 updatePOFileList();
                 updatePOStats();
+                
+                // Small delay between files to avoid overwhelming the system
+                if (i < currentPOFiles.length - 1) {
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                }
             }
             
-            showNotification('Individual PO files processed successfully!', 'success');
+            // Final summary
+            if (errorCount > 0) {
+                showNotification(`🎯 Processing complete! ${successCount} successful, ${errorCount} failed.`, 'warning');
+            } else {
+                showNotification(`🎉 All ${successCount} PO files processed successfully with AI!`, 'success');
+            }
         }
+
+
 
         // Process folder-based files using API
         async function processFolderBasedPOFiles() {
@@ -1577,97 +1659,18 @@
                     
                     // Check if it's an AI quota issue
                     if (errorText.includes('quota') || errorText.includes('429') || errorText.includes('insufficient_quota')) {
-                        showNotification('AI processing failed due to quota limits. Using fallback processing...', 'warning');
-                        
-                        // Use fallback processing
-                        await processPOFilesFallback();
+                        showNotification('AI processing failed due to quota limits. Please try again later.', 'error');
                     } else {
                         showNotification(`Error processing files: ${errorText}`, 'error');
                     }
                 }
             } catch (error) {
                 console.error('PO Processing Network Error:', error);
-                showNotification(`Network error: ${error.message}. Using fallback processing...`, 'warning');
-                
-                // Use fallback processing
-                await processPOFilesFallback();
+                showNotification(`Network error: ${error.message}. Please check your connection and try again.`, 'error');
             }
         }
 
-        // Fallback PO processing when AI is unavailable
-        async function processPOFilesFallback() {
-            if (currentPOFiles.length === 0) {
-                showNotification('No PO files to process', 'warning');
-                return;
-            }
 
-            showNotification('Processing PO files with fallback method...', 'info');
-            
-            // Check if we have individual files or folder-based files
-            const hasIndividualFiles = currentPOFiles.some(f => f.file);
-            
-            if (hasIndividualFiles) {
-                // Process individual files directly
-                await processIndividualPOFiles();
-            } else {
-                // Process folder-based files with fallback
-                for (let i = 0; i < currentPOFiles.length; i++) {
-                    const file = currentPOFiles[i];
-                    
-                    // Update status to processing
-                    file.status = 'processing';
-                    updatePOFileList();
-                    
-                    // Simulate processing delay
-                    await new Promise(resolve => setTimeout(resolve, 500));
-                    
-                    // Generate mock PO data for demonstration
-                    const mockPOData = generateMockPOData(file.name);
-                    
-                    // Update file with mock results
-                    file.status = 'processed';
-                    file.result = {
-                        po_number: mockPOData.po_number,
-                        vendor_name: mockPOData.vendor_name,
-                        total_amount: mockPOData.total_amount,
-                        po_date: mockPOData.po_date
-                    };
-                    
-                    updatePOFileList();
-                    updatePOStats();
-                }
-                
-                showNotification('Fallback processing complete! (Using mock data for demonstration)', 'success');
-            }
-        }
-
-        // Generate mock PO data for demonstration
-        function generateMockPOData(filename) {
-            const vendors = [
-                'Acme Construction Supply Co.',
-                'Builders Warehouse & Supply',
-                'Construction Materials Plus',
-                'Professional Building Supplies',
-                'Quality Construction Tools',
-                'Industrial Supply Solutions'
-            ];
-            
-            const amounts = [1250.00, 875.50, 2100.00, 3450.75, 1899.99, 2750.25];
-            
-            // Extract PO number from filename if possible
-            let poNumber = 'PO-2024-001';
-            if (filename.includes('PO-')) {
-                const match = filename.match(/PO-\d+-\d+/);
-                if (match) poNumber = match[0];
-            }
-            
-            return {
-                po_number: poNumber,
-                vendor_name: vendors[Math.floor(Math.random() * vendors.length)],
-                total_amount: amounts[Math.floor(Math.random() * amounts.length)],
-                po_date: new Date().toISOString().split('T')[0]
-            };
-        }
 
         function updatePOFilesFromBatchResult(batchResult) {
             if (!batchResult) return;
@@ -1983,32 +1986,11 @@
                     const fileExtension = file.name.toLowerCase().split('.').pop();
                     const fileSize = (file.size / 1024).toFixed(1); // Size in KB
                     
-                    // Create more realistic vendor names based on file type
-                    const vendorNames = [
-                        'Acme Construction Supply Co.',
-                        'Builders Warehouse & Supply',
-                        'Construction Materials Plus',
-                        'Professional Building Supplies',
-                        'Quality Construction Tools',
-                        'Industrial Supply Solutions',
-                        'Contractor Equipment Co.',
-                        'Building Materials Express',
-                        'Construction Supply Depot',
-                        'Professional Tools & Materials'
-                    ];
-                    
-                    // Create realistic amounts based on construction industry
-                    const realisticAmounts = [
-                        1250.00, 875.50, 2100.00, 3450.75, 1899.99,
-                        2750.25, 1560.80, 4200.00, 950.25, 3100.50,
-                        1850.75, 2650.00, 1450.25, 3800.00, 2200.75
-                    ];
-                    
-                    // Add new invoice to the list
+                    // Create invoice with minimal data - no fake vendors or amounts
                     const newInvoice = {
                         id: file.name.replace(/\.[^/.]+$/, ""), // Use filename without extension as ID
-                        vendor: vendorNames[Math.floor(Math.random() * vendorNames.length)],
-                        amount: realisticAmounts[Math.floor(Math.random() * realisticAmounts.length)],
+                        vendor: 'Unknown Vendor', // Will be filled by real processing
+                        amount: 0, // Will be filled by real processing
                         date: new Date().toISOString().split('T')[0],
                         status: 'processing',
                         recommendation: 'pending',
@@ -2191,12 +2173,9 @@
             // Vendor Analysis
             if (poMatches.length > 0) {
                 const bestMatch = poMatches[0];
-                if (bestMatch.vendor_name.toLowerCase().includes('construction') || 
-                    bestMatch.vendor_name.toLowerCase().includes('building') ||
-                    bestMatch.vendor_name.toLowerCase().includes('supply')) {
-                    analysis.push(`✅ Vendor type: Construction/Supply (expected for this PO)`);
-                    confidence += 0.05;
-                }
+                // Vendor validation will be based on actual document content
+                analysis.push(`✅ Vendor: ${bestMatch.vendor_name} (from PO match)`);
+                confidence += 0.05;
             }
             
             // Final Recommendation
@@ -2684,40 +2663,8 @@
 
         // Missing Functions
         function loadSampleInvoices() {
-            // Sample data for demonstration
-            currentInvoices = [
-                {
-                    id: 'INV-001',
-                    vendor: 'Acme Construction Supply Co.',
-                    amount: 1250.00,
-                    date: '2024-01-15',
-                    status: 'pending',
-                    recommendation: 'pending',
-                    po_matches: [],
-                    confidence: 0
-                },
-                {
-                    id: 'INV-002',
-                    vendor: 'Builders Warehouse & Supply',
-                    amount: 875.50,
-                    date: '2024-01-16',
-                    status: 'pending',
-                    recommendation: 'pending',
-                    po_matches: [],
-                    confidence: 0
-                },
-                {
-                    id: 'INV-003',
-                    vendor: 'Construction Materials Plus',
-                    amount: 2100.00,
-                    date: '2024-01-17',
-                    status: 'pending',
-                    recommendation: 'pending',
-                    po_matches: [],
-                    confidence: 0
-                }
-            ];
-
+            // Start with empty invoice list - no fake data
+            currentInvoices = [];
             updateInvoiceTable();
         }
 

@@ -30,6 +30,7 @@ class Settings(BaseSettings):
 
     # File Storage
     upload_dir: str = "uploads"
+    temp_dir: str = "temp"  # Temporary directory for file processing
     max_file_size: int = 10485760  # 10MB
     allowed_extensions: Union[str, List[str]] = "pdf,png,jpg,jpeg,tiff"
 

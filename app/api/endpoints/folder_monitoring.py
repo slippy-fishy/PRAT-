@@ -5,14 +5,17 @@ import logging
 import os
 from pathlib import Path
 from typing import Dict, Any
+import time
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db_context
 from app.services.po_folder_service import POFolderService
 from app.config import settings
+from app.services.pdf_extractor import PDFExtractor
+from app.services.ai_analysis import AIAnalysisService
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +23,8 @@ router = APIRouter()
 
 # Global folder service instance
 po_folder_service = POFolderService()
+pdf_extractor = PDFExtractor()
+ai_analysis_service = AIAnalysisService()
 
 class FolderScanRequest(BaseModel):
     """Request model for scanning a custom folder"""
@@ -220,6 +225,118 @@ async def get_folder_contents():
     except Exception as e:
         logger.error(f"Error getting folder contents: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get folder contents: {str(e)}")
+
+@router.post("/process-po-file")
+async def process_po_file(
+    file: UploadFile = File(..., description="PO file to process"),
+):
+    """
+    Process an individual PO file and extract data using AI
+    """
+    try:
+        logger.info(f"Processing individual PO file: {file.filename}")
+        
+        # Validate file
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="No file provided")
+        
+        # Check file extension
+        file_extension = Path(file.filename).suffix.lower()
+        if file_extension not in ['.pdf', '.txt', '.html', '.doc', '.docx']:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File type {file_extension} not allowed. Allowed types: .pdf, .txt, .html, .doc, .docx"
+            )
+        
+        # Save uploaded file temporarily
+        temp_dir = Path(settings.temp_dir)
+        temp_dir.mkdir(exist_ok=True)
+        
+        file_path = temp_dir / f"{int(time.time())}_{file.filename}"
+        
+        with open(file_path, "wb") as buffer:
+            content = await file.read()
+            buffer.write(content)
+        
+        logger.info(f"File saved to: {file_path}")
+        
+        try:
+            # 1. Extract text from PDF using PDF extractor
+            logger.info(f"Extracting text from PDF: {file_path}")
+            extracted_text = pdf_extractor.extract_text_from_pdf(str(file_path))
+            
+            if not extracted_text or len(extracted_text.strip()) < 10:
+                raise ValueError("Failed to extract meaningful text from PDF")
+            
+            logger.info(f"Successfully extracted {len(extracted_text)} characters from PDF")
+            
+            # 2. Analyze extracted text using AI
+            logger.info(f"Analyzing extracted text with AI...")
+            po_data = ai_analysis_service.analyze_po_document(extracted_text)
+            
+            if not po_data:
+                raise ValueError("AI analysis failed to return structured data")
+            
+            logger.info(f"AI analysis successful, extracted PO data: {po_data.get('po_number', 'Unknown')}")
+            
+            # Clean up temp file
+            if file_path.exists():
+                file_path.unlink()
+            
+            return {
+                "filename": file.filename,
+                "po_number": po_data.get("po_number"),
+                "vendor_name": po_data.get("vendor_name"),
+                "total_amount": po_data.get("total_authorized"),
+                "po_date": po_data.get("po_date"),
+                "delivery_date": po_data.get("delivery_date"),
+                "currency": po_data.get("currency", "USD"),
+                "status": po_data.get("status", "active"),
+                "line_items": po_data.get("line_items", []),
+                "processing_time": time.time(),
+                "extraction_method": "pdf_extractor + ai_analysis"
+            }
+            
+        except Exception as processing_error:
+            logger.error(f"Error processing PO file {file.filename}: {processing_error}")
+            
+            # Clean up temp file
+            if file_path.exists():
+                file_path.unlink()
+            
+            # Provide specific error messages based on error type
+            if "Failed to extract meaningful text" in str(processing_error):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"PDF text extraction failed: {str(processing_error)}"
+                )
+            elif "AI analysis failed" in str(processing_error):
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"AI analysis failed: {str(processing_error)}"
+                )
+            elif "OpenAI" in str(processing_error) or "quota" in str(processing_error).lower():
+                raise HTTPException(
+                    status_code=429,
+                    detail="AI processing quota exceeded. Please try again later."
+                )
+            elif "insufficient_quota" in str(processing_error).lower():
+                raise HTTPException(
+                    status_code=429,
+                    detail="OpenAI API quota exceeded. Please check your billing and try again."
+                )
+            else:
+                # Generic error for unexpected issues
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to process PO file: {str(processing_error)}"
+                )
+                
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error processing PO file: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 def _get_folder_contents(folder_path: str) -> Dict[str, Any]:
     """Get contents of a specific folder"""
